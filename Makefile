@@ -11,10 +11,10 @@ PRINT_COMPILING=@echo "$(COMPILING_STRING)"
 
 compile:
 	$(PRINT_COMPILING)
-	g++ -fPIC -shared -I . RAColorBasedCoalescing.cpp CodeGen/*.cpp -o libRegAllocColor.so `llvm-config --cxxflags`
+	g++ -fPIC -shared -I . RAColorBasedCoalescing.cpp CodeGen/*.cpp -o libRegAllocColor.so `llvm-config-4.0 --cxxflags`
 	$(PRINT_DONE)
 run:
-	clang -c -emit-llvm tests/main.c -o tests/main.bc
-	llc -load ./libRegAllocColor.so -regalloc=colorBased tests/main.bc -o tests/main.s
+	clang-4.0 -c -emit-llvm tests/main.c -o tests/main.bc
+	llc-4.0 -load ./libRegAllocColor.so -regalloc=colorBased tests/main.bc -o tests/main.s
 	
 	

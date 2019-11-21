@@ -333,69 +333,69 @@ public:
 };
 } // namespace
 
-static void printDebugLoc(const DebugLoc &DL, raw_ostream &CommentOS,
-                          const LLVMContext &Ctx) {
-  if (!DL)
-    return;
+// static void printDebugLoc(const DebugLoc &DL, raw_ostream &CommentOS,
+//                           const LLVMContext &Ctx) {
+//   if (!DL)
+//     return;
 
-  auto *Scope = cast<DIScope>(DL.getScope());
-  // Omit the directory, because it's likely to be long and uninteresting.
-  CommentOS << Scope->getFilename();
-  CommentOS << ':' << DL.getLine();
-  if (DL.getCol() != 0)
-    CommentOS << ':' << DL.getCol();
+//   auto *Scope = cast<DIScope>(DL.getScope());
+//   // Omit the directory, because it's likely to be long and uninteresting.
+//   CommentOS << Scope->getFilename();
+//   CommentOS << ':' << DL.getLine();
+//   if (DL.getCol() != 0)
+//     CommentOS << ':' << DL.getCol();
 
-  DebugLoc InlinedAtDL = DL.getInlinedAt();
-  if (!InlinedAtDL)
-    return;
+//   DebugLoc InlinedAtDL = DL.getInlinedAt();
+//   if (!InlinedAtDL)
+//     return;
 
-  CommentOS << " @[ ";
-  printDebugLoc(InlinedAtDL, CommentOS, Ctx);
-  CommentOS << " ]";
-}
+//   CommentOS << " @[ ";
+//   printDebugLoc(InlinedAtDL, CommentOS, Ctx);
+//   CommentOS << " ]";
+// }
 
-static void printExtendedName(raw_ostream &OS, const DILocalVariable *V,
-                              const DILocation *DL) {
-  const LLVMContext &Ctx = V->getContext();
-  StringRef Res = V->getName();
-  if (!Res.empty())
-    OS << Res << "," << V->getLine();
-  if (auto *InlinedAt = DL->getInlinedAt()) {
-    if (DebugLoc InlinedAtDL = InlinedAt) {
-      OS << " @[";
-      printDebugLoc(InlinedAtDL, OS, Ctx);
-      OS << "]";
-    }
-  }
-}
+// static void printExtendedName(raw_ostream &OS, const DILocalVariable *V,
+//                               const DILocation *DL) {
+//   const LLVMContext &Ctx = V->getContext();
+//   StringRef Res = V->getName();
+//   if (!Res.empty())
+//     OS << Res << "," << V->getLine();
+//   if (auto *InlinedAt = DL->getInlinedAt()) {
+//     if (DebugLoc InlinedAtDL = InlinedAt) {
+//       OS << " @[";
+//       printDebugLoc(InlinedAtDL, OS, Ctx);
+//       OS << "]";
+//     }
+//   }
+// }
 
-void UserValue::print(raw_ostream &OS, const TargetRegisterInfo *TRI) {
-  auto *DV = cast<DILocalVariable>(Variable);
-  OS << "!\"";
-  printExtendedName(OS, DV, dl);
+// void UserValue::print(raw_ostream &OS, const TargetRegisterInfo *TRI) {
+//   auto *DV = cast<DILocalVariable>(Variable);
+//   OS << "!\"";
+//   printExtendedName(OS, DV, dl);
 
-  OS << "\"\t";
-  if (offset)
-    OS << '+' << offset;
-  for (LocMap::const_iterator I = locInts.begin(); I.valid(); ++I) {
-    OS << " [" << I.start() << ';' << I.stop() << "):";
-    if (I.value() == ~0u)
-      OS << "undef";
-    else
-      OS << I.value();
-  }
-  for (unsigned i = 0, e = locations.size(); i != e; ++i) {
-    OS << " Loc" << i << '=';
-    locations[i].print(OS, TRI);
-  }
-  OS << '\n';
-}
+//   OS << "\"\t";
+//   if (offset)
+//     OS << '+' << offset;
+//   for (LocMap::const_iterator I = locInts.begin(); I.valid(); ++I) {
+//     OS << " [" << I.start() << ';' << I.stop() << "):";
+//     if (I.value() == ~0u)
+//       OS << "undef";
+//     else
+//       OS << I.value();
+//   }
+//   for (unsigned i = 0, e = locations.size(); i != e; ++i) {
+//     OS << " Loc" << i << '=';
+//     locations[i].print(OS, TRI);
+//   }
+//   OS << '\n';
+// }
 
-void LDVImpl::print(raw_ostream &OS) {
-  OS << "********** DEBUG VARIABLES **********\n";
-  for (unsigned i = 0, e = userValues.size(); i != e; ++i)
-    userValues[i]->print(OS, TRI);
-}
+// void LDVImpl::print(raw_ostream &OS) {
+//   OS << "********** DEBUG VARIABLES **********\n";
+//   for (unsigned i = 0, e = userValues.size(); i != e; ++i)
+//     userValues[i]->print(OS, TRI);
+// }
 
 void UserValue::coalesceLocation(unsigned LocNo) {
   unsigned KeepLoc = 0;

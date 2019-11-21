@@ -412,7 +412,7 @@ void SplitEditor::addDeadDef(LiveInterval &LI, VNInfo *VNI, bool Original) {
     // register, we need to check which subranges need to be updated.
     const MachineInstr *DefMI = LIS.getInstructionFromIndex(Def);
     assert(DefMI != nullptr);
-    LaneBitmask LM = 0;
+    LaneBitmask LM = LaneBitmask(0);
     for (const MachineOperand &DefOp : DefMI->defs()) {
       unsigned R = DefOp.getReg();
       if (R != LI.reg)
@@ -425,7 +425,7 @@ void SplitEditor::addDeadDef(LiveInterval &LI, VNInfo *VNI, bool Original) {
       }
     }
     for (LiveInterval::SubRange &S : LI.subranges())
-      if (S.LaneMask & LM)
+      if ((S.LaneMask & LM) != LaneBitmask())
         S.createDeadDef(Def, LIS.getVNInfoAllocator());
   }
 }
@@ -1102,7 +1102,7 @@ void SplitEditor::extendPHIRange(MachineBasicBlock &B, LiveRangeCalc &LRC,
     LiveInterval &PLI = Edit->getParent();
     // Need the cast because the inputs to ?: would otherwise be deemed
     // "incompatible": SubRange vs LiveInterval.
-    LiveRange &PSR = (LM != ~0u) ? getSubRangeForMask(LM, PLI)
+    LiveRange &PSR = (LM != LaneBitmask(~0u)) ? getSubRangeForMask(LM, PLI)
                                  : static_cast<LiveRange&>(PLI);
     if (PSR.liveAt(LastUse))
       LRC.extend(LR, End, /*PhysReg=*/0, Undefs);
@@ -1126,7 +1126,7 @@ void SplitEditor::extendPHIKillRanges() {
     LiveRangeCalc &LRC = getLRCalc(RegIdx);
     MachineBasicBlock &B = *LIS.getMBBFromIndex(V->def);
     if (!removeDeadSegment(V->def, LI))
-      extendPHIRange(B, LRC, LI, ~0u, /*Undefs=*/{});
+      extendPHIRange(B, LRC, LI, LaneBitmask(~0u), /*Undefs=*/{});
   }
 
   SmallVector<SlotIndex, 4> Undefs;
@@ -1229,7 +1229,7 @@ void SplitEditor::rewriteAssigned(bool ExtendRanges) {
     LaneBitmask LM = Sub != 0 ? TRI.getSubRegIndexLaneMask(Sub)
                               : MRI.getMaxLaneMaskForVReg(Reg);
     for (LiveInterval::SubRange &S : LI.subranges()) {
-      if (!(S.LaneMask & LM))
+      if ((S.LaneMask & LM) == LaneBitmask())
         continue;
       // The problem here can be that the new register may have been created
       // for a partially defined original register. For example:

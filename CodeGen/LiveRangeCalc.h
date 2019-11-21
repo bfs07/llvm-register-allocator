@@ -215,7 +215,7 @@ public:
   /// All uses must be jointly dominated by existing liveness.  PHI-defs are
   /// inserted as needed to preserve SSA form.
   void extendToUses(LiveRange &LR, unsigned PhysReg) {
-    extendToUses(LR, PhysReg, ~0u);
+    extendToUses(LR, PhysReg, LaneBitmask(~0u));
   }
 
   /// Calculates liveness for the register specified in live interval @p LI.
