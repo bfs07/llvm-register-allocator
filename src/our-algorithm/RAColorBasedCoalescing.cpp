@@ -261,7 +261,7 @@ unsigned RAColorBasedCoalescing::selectOrSplit(LiveInterval &VirtReg, SmallVecto
   if (!VirtReg.isSpillable())
     return ~0u;
   
-  dbgs() << "SPILLING: " << PrintReg(VirtReg.reg, TRI);
+  //dbgs() << "SPILLING: " << PrintReg(VirtReg.reg, TRI);
   LiveRangeEdit LRE(&VirtReg, SplitVRegs, *MF, *LIS, VRM, nullptr, &DeadRemats);
   spiller().spill(LRE);
   
@@ -278,7 +278,7 @@ void RAColorBasedCoalescing::algorithm(MachineFunction &mf) {
 
     simplify();
 
-    printInterferenceGraphWithColor();
+    //printInterferenceGraphWithColor();
 
 }
 
@@ -473,9 +473,9 @@ void RAColorBasedCoalescing::simplify() {
 // ===-------------- LLVM --------------===
 
 bool RAColorBasedCoalescing::runOnMachineFunction(MachineFunction &mf) {
-  dbgs() << "\n********** COLORING-BASED COALESCING REGISTER ALLOCATION **********\n"
+  /*dbgs() << "\n********** COLORING-BASED COALESCING REGISTER ALLOCATION **********\n"
               << "********** Function: "
-              << mf.getName() << '\n';
+              << mf.getName() << '\n';*/
 
   MF = &mf;
   RegAllocBase::init(getAnalysis<VirtRegMap>(),
@@ -497,10 +497,10 @@ bool RAColorBasedCoalescing::runOnMachineFunction(MachineFunction &mf) {
   AA = &getAnalysis<AAResultsWrapperPass>().getAAResults();
 
 
-  dbgs() << "********** Number of virtual registers: " << MRI->getNumVirtRegs() << "\n\n";
+  //dbgs() << "********** Number of virtual registers: " << MRI->getNumVirtRegs() << "\n\n";
 
 
-  printVirtualRegisters();
+  //printVirtualRegisters();
 
   algorithm(mf);
 
@@ -510,7 +510,7 @@ bool RAColorBasedCoalescing::runOnMachineFunction(MachineFunction &mf) {
   clearAll();
 
   // Diagnostic output before rewriting
-  dbgs() << "\nPost alloc VirtRegMap:\n" << *VRM << "\n";
+  //dbgs() << "\nPost alloc VirtRegMap:\n" << *VRM << "\n";
 
   releaseMemory();
   return true;
