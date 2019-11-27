@@ -16,5 +16,4 @@ compile:
 run:
 	clang-4.0 -c -emit-llvm tests/main.c -o tests/main.bc
 	llc-4.0 -load ./libRegAllocColor.so -regalloc=colorBased tests/main.bc -o tests/main.s
-	
-	
+	llc-4.0 -load ./libRegAllocColor.so -regalloc=colorBased tests/main.bc -filetype=obj -o tests/main.o
