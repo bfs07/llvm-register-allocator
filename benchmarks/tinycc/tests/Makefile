@@ -6,6 +6,7 @@ TOP = ..
 include $(TOP)/Makefile
 VPATH = $(TOPSRC)/tests $(TOPSRC) $(TOP)
 CFLAGS := $(filter-out -W% -g% -O%,$(CFLAGS)) -I$(TOPSRC) $(LDFLAGS)
+CFLAGS += -fPIC
 
 # what tests to run
 TESTS = \

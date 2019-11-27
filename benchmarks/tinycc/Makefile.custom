@@ -2,6 +2,10 @@
 #
 # Tiny C Compiler Makefile
 #
+# Modified to run custom LLVM register allocators)
+# Define LLC_FLAGS with -load and -regalloc before invoking.
+#
+#
 
 ifndef TOP
  TOP = .
@@ -13,6 +17,7 @@ include $(TOP)/config.mak
 ifeq (-$(CC)-$(GCC_MAJOR)-$(findstring $(GCC_MINOR),56789)-,-gcc-4--)
  CFLAGS += -D_FORTIFY_SOURCE=0
 endif
+CFLAGS += -fPIC
 
 LIBTCC = libtcc.a
 LIBTCC1 = libtcc1.a
@@ -190,25 +195,27 @@ endif
 
 # target specific object rule
 $(X)%.o : %.c $(LIBTCC_INC)
-	$(CC) -o $@ -c $< $(DEFINES) $(CFLAGS)
+	clang-4.0 -emit-llvm -o $@.bc -c $< $(DEFINES) $(CFLAGS)
+	llc-4.0 $(LLC_FLAGS) $@.bc -filetype=obj -o $@
+	rm $@.bc
 
 # additional dependencies
 $(X)tcc.o : tcctools.c
 
 # Host Tiny C Compiler
 tcc$(EXESUF): tcc.o $(LIBTCC)
-	$(CC) -o $@ $^ $(LIBS) $(LDFLAGS) $(LINK_LIBTCC)
+	clang-4.0 -o $@ $^ $(LIBS) $(LDFLAGS) $(LINK_LIBTCC)
 
 # Cross Tiny C Compilers
 %-tcc$(EXESUF): FORCE
 	@$(MAKE) --no-print-directory $@ CROSS_TARGET=$* ONE_SOURCE=$(or $(ONE_SOURCE),yes)
 
 $(CROSS_TARGET)-tcc$(EXESUF): $(TCC_FILES)
-	$(CC) -o $@ $^ $(LIBS) $(LDFLAGS)
+	clang-4.0 -o $@ $^ $(LIBS) $(LDFLAGS)
 
 # profiling version
 tcc_p$(EXESUF): $($T_FILES)
-	$(CC) -o $@ $< $(DEFINES) $(CFLAGS_P) $(LIBS_P) $(LDFLAGS_P)
+	clang-4.0 -o $@ $< $(DEFINES) $(CFLAGS_P) $(LIBS_P) $(LDFLAGS_P)
 
 # static libtcc library
 libtcc.a: $(LIBTCC_OBJ)
@@ -216,14 +223,14 @@ libtcc.a: $(LIBTCC_OBJ)
 
 # dynamic libtcc library
 libtcc.so: $(LIBTCC_OBJ)
-	$(CC) -shared -Wl,-soname,$@ -o $@ $^ $(LDFLAGS)
+	clang-4.0 -shared -Wl,-soname,$@ -o $@ $^ $(LDFLAGS)
 
 libtcc.so: CFLAGS+=-fPIC
 libtcc.so: LDFLAGS+=-fPIC
 
 # windows dynamic libtcc library
 libtcc.dll : $(LIBTCC_OBJ)
-	$(CC) -shared -o $@ $^ $(LDFLAGS)
+	clang-4.0 -shared -o $@ $^ $(LDFLAGS)
 libtcc.dll : DEFINES += -DLIBTCC_AS_DLL
 
 # import file for windows libtcc.dll
