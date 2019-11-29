@@ -12,7 +12,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include <iostream>
 #include "llvm/CodeGen/Passes.h"
 #include "CodeGen/AllocationOrder.h"
 #include "CodeGen/LiveDebugVariables.h"
@@ -37,7 +36,6 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetRegisterInfo.h"
-#include <algorithm>
 #include <cstdlib>
 #include <map>
 #include <set>
@@ -84,14 +82,12 @@ namespace {
   std::map<unsigned, std::set<unsigned>> InterferenceGraph;
   std::map<unsigned, int> Degree;
   std::map<unsigned, bool> OnStack;
-  std::stack<unsigned> ColoringStack;
+  std::priority_queue<std::pair<unsigned, unsigned>> ColoringPq;
   std::map<unsigned, int> ColorsTemp;
   std::map<unsigned, int> Colors;
   std::map<unsigned, std::set<unsigned>> CopyRelated;
-  std::list<int> ExtendedColors;
+  std::vector<int> ExtendedColors;
   std::map<unsigned, double> SpillWeight;
-  // the key represents the id associated to the real color (0 ... maxColor) and the real color.
-  std::map<unsigned, std::pair<unsigned, unsigned>> color;
 
 
   class RAColorBasedCoalescing : public MachineFunctionPass, public RegAllocBase {
@@ -113,21 +109,15 @@ namespace {
 
       void calculateSpillCosts();
 
-      void clear();
-
       void clearAll();
-
-      bool spillCode();
-
-      void save();
 
       bool spillInterferences(LiveInterval &VirtReg, unsigned PhysReg, SmallVectorImpl<unsigned> &SplitVRegs);
 
-      unsigned selectOrSplit1(LiveInterval &VirtReg, SmallVectorImpl<unsigned> &SplitVRegs);
-
       bool isMarkedForSpill(unsigned vreg);
 
-      void assignColor(unsigned VirtRegID);
+      int getNumPhysicalRegs(unsigned VirtRegID);
+      
+      void printVirtualRegisters();
 
       // ===-------------- Interference Graph methods --------------===
 
@@ -141,33 +131,15 @@ namespace {
 
       void simplify();
 
-      int getNumPhysicalRegs(unsigned VirtRegID);
-
       void biasedSelectExtended();
 
       bool isExtendedColor(int color);
 
-      std::list<int> getPotentialRegs(unsigned vreg);
+      std::vector<int> getPotentialRegs(unsigned vreg);
 
-      int getColor(std::list<int> Colors, unsigned vreg);
+      int getColor(std::vector<int> Colors, unsigned vreg);
 
       int createNewExtendedColor();
-
-      // ===-------------- Coalescing --------------===
-
-      void coalescing();
-
-      void coalesce(unsigned copy_related1, unsigned copy_related2);
-
-
-      // ===-------------- Spliting --------------===
-
-      void trySplitAll();
-
-      unsigned trySplit(LiveInterval &VirtReg, AllocationOrder &Order, SmallVectorImpl<unsigned> &NewVRegs);
-
-      void printVirtualRegisters();
-
 
     public:
       RAColorBasedCoalescing();
@@ -253,19 +225,97 @@ void RAColorBasedCoalescing::releaseMemory() {
 }
 
 unsigned RAColorBasedCoalescing::selectOrSplit(LiveInterval &VirtReg, SmallVectorImpl<unsigned> &SplitVRegs) {
-  
-  // if it is not marked for spill
-  if(color[VirtReg.reg].first != 30)
-    return color[VirtReg.reg].second;  
+  // Populate a list of physical register spill candidates.
+  SmallVector<unsigned, 8> PhysRegSpillCands;
 
+  std::vector<int> potentialRegs = getPotentialRegs(VirtReg.reg);
+
+  // idx represents the index of ColorsTemp[VirtReg.reg])
+  int idx = std::lower_bound(potentialRegs.begin(), potentialRegs.end(), ColorsTemp[VirtReg.reg]) - potentialRegs.begin();
+  // rotating in order to put the color(physical register) chosen in getColor method as first member
+  std::rotate(potentialRegs.begin(), potentialRegs.begin() + idx, potentialRegs.end());
+
+  for (unsigned PhysReg: potentialRegs) {
+    // Check for interference in PhysReg
+    switch (Matrix->checkInterference(VirtReg, PhysReg)) {
+    case LiveRegMatrix::IK_Free:
+      // PhysReg is available, allocate it.
+      return PhysReg;
+
+    case LiveRegMatrix::IK_VirtReg:
+      // Only virtual registers in the way, we may be able to spill them.
+      PhysRegSpillCands.push_back(PhysReg);
+      continue;
+
+    default:
+      // RegMask or RegUnit interference.
+      continue;
+    }
+  }
+
+  // Try to spill another interfering reg with less spill weight.
+  for (SmallVectorImpl<unsigned>::iterator PhysRegI = PhysRegSpillCands.begin(),
+       PhysRegE = PhysRegSpillCands.end(); PhysRegI != PhysRegE; ++PhysRegI) {
+    if (!spillInterferences(VirtReg, *PhysRegI, SplitVRegs))
+      continue;
+
+    assert(!Matrix->checkInterference(VirtReg, *PhysRegI) &&
+           "Interference after spill.");
+    // Tell the caller to allocate to this newly freed physical register.
+    return *PhysRegI;
+  }
+
+  // No other spill candidates were found, so spill the current VirtReg.
+  // DEBUG(dbgs() << "spilling: " << VirtReg << '\n');
   if (!VirtReg.isSpillable())
     return ~0u;
-  
-  //dbgs() << "SPILLING: " << PrintReg(VirtReg.reg, TRI);
-  LiveRangeEdit LRE(&VirtReg, SplitVRegs, *MF, *LIS, VRM, nullptr, &DeadRemats);
+  LiveRangeEdit LRE(&VirtReg, SplitVRegs, *MF, *LIS, VRM);
   spiller().spill(LRE);
-  
+
+  // The live virtual register requesting allocation was spilled, so tell
+  // the caller not to allocate anything during this round.
   return 0;
+}
+
+bool RAColorBasedCoalescing::spillInterferences(LiveInterval &VirtReg, unsigned PhysReg, SmallVectorImpl<unsigned> &SplitVRegs) {
+  // Record each interference and determine if all are spillable before mutating
+  // either the union or live intervals.
+  SmallVector<LiveInterval*, 8> Intfs;
+
+  // Collect interferences assigned to any alias of the physical register.
+  for (MCRegUnitIterator Units(PhysReg, TRI); Units.isValid(); ++Units) {
+    LiveIntervalUnion::Query &Q = Matrix->query(VirtReg, *Units);
+    Q.collectInterferingVRegs();
+    if (Q.seenUnspillableVReg())
+      return false;
+    for (unsigned i = Q.interferingVRegs().size(); i; --i) {
+      LiveInterval *Intf = Q.interferingVRegs()[i - 1];
+      if (!Intf->isSpillable() || Intf->weight > VirtReg.weight)
+        return false;
+      Intfs.push_back(Intf);
+    }
+  }
+  /*DEBUG(dbgs() << "spilling " << TRI->getName(PhysReg) <<
+        " interferences with " << VirtReg << "\n");*/
+  assert(!Intfs.empty() && "expected interference");
+
+  // Spill each interfering vreg allocated to PhysReg or an alias.
+  for (unsigned i = 0, e = Intfs.size(); i != e; ++i) {
+    LiveInterval &Spill = *Intfs[i];
+
+    // Skip duplicates.
+    if (!VRM->hasPhys(Spill.reg))
+      continue;
+
+    // Deallocate the interfering vreg by removing it from the union.
+    // A LiveInterval instance may not be in a union during modification!
+    Matrix->unassign(Spill);
+
+    // Spill the extracted interval.
+    LiveRangeEdit LRE(&Spill, SplitVRegs, *MF, *LIS, VRM);
+    spiller().spill(LRE);
+  }
+  return true;
 }
 
 //===----------------------------------------------------------------------===//
@@ -273,13 +323,39 @@ unsigned RAColorBasedCoalescing::selectOrSplit(LiveInterval &VirtReg, SmallVecto
 //===----------------------------------------------------------------------===//
 
 void RAColorBasedCoalescing::algorithm(MachineFunction &mf) {
+  srand(time(NULL));
 
-    buildInterferenceGraph();
+  buildInterferenceGraph();
 
-    simplify();
+  calculateSpillCosts();
 
-    //printInterferenceGraphWithColor();
+  simplify();
 
+  biasedSelectExtended();
+
+  // printInterferenceGraphWithColor();
+}
+
+void RAColorBasedCoalescing::calculateSpillCosts() {
+  for(std::map<unsigned, std::set<unsigned>> :: iterator i = InterferenceGraph.begin(); i != InterferenceGraph.end(); i++) {
+    double newSpillWeight = 0;
+    unsigned vreg = i->first;
+
+    // go over the def-use of virtual register
+    for (MachineRegisterInfo::reg_instr_iterator I = MRI->reg_instr_begin(vreg), E = MRI->reg_instr_end(); I != E; ) {
+      MachineInstr *machInst = &*(I++);
+      unsigned loopDepth = MLI->getLoopDepth(machInst->getParent());
+
+      if (loopDepth > 35) {
+          loopDepth = 35; // Avoid overflowing the variable
+      }
+
+      std::pair<bool, bool> readWrite = machInst->readsWritesVirtualRegister(vreg);
+      newSpillWeight += (readWrite.first + readWrite.second) * pow(10, loopDepth);
+    }
+
+    SpillWeight[vreg] = newSpillWeight;
+  }
 }
 
 void RAColorBasedCoalescing::clearAll() {
@@ -359,6 +435,19 @@ void RAColorBasedCoalescing::buildInterferenceGraph() {
   }
 }
 
+void RAColorBasedCoalescing::printInterferenceGraph() {
+  dbgs() << " Interference Graph: \n";
+  dbgs() << "-----------------------------------------------------------------\n";
+  for(std::map<unsigned, std::set<unsigned>> :: iterator j = InterferenceGraph.begin(); j != InterferenceGraph.end(); j++) {
+    dbgs() << "Interferences of " << j->first << "::" << PrintReg(j->first, TRI) << " => " << Degree[j->first] << ": {";
+    for(std::set<unsigned> :: iterator k = j->second.begin(); k != j->second.end(); k++) {
+      dbgs() << *k << ",";
+    }
+    dbgs() << "}\n";
+  }
+  dbgs() << "-----------------------------------------------------------------\n";
+}
+
 void RAColorBasedCoalescing::printInterferenceGraphWithColor() {
   dbgs() << " Interference Graph: \n";
   dbgs() << "-----------------------------------------------------------------\n";
@@ -368,106 +457,111 @@ void RAColorBasedCoalescing::printInterferenceGraphWithColor() {
       dbgs() << *k << ",";
     }
     dbgs() << "}";
-    if(color[j->first].first != 30)
-      dbgs() << " -- COLOR => " << color[j->first].first << "::" << PrintReg(color[j->first].second, TRI) << "\n";
-    else 
-      dbgs() << " -- SPILLED" << "\n";
-    
+
+    int color = ColorsTemp[j->first];
+    if (isExtendedColor(color)) {
+      dbgs() << " -- EXTENDED COLOR => " << color << "\n";
+    } else {
+      dbgs() << " -- COLOR => " << color << "::" << PrintReg(color, TRI) << "\n";
+    }
   }
   dbgs() << "-----------------------------------------------------------------\n";
 }
 
 // ===-------------- Coloring methods --------------===
 
-/// Verifies if the k-th bit is set.
-bool isSet(int number, int k) {
-  return (number >> k) & 1; 
-}
-
-int RAColorBasedCoalescing::getNumPhysicalRegs(unsigned VirtRegID) {
-
-  AllocationOrder Order(VirtRegID, *VRM, RegClassInfo, Matrix);
-
-  int cnt = 0;
-  while (Order.next()) {
-    cnt++;
-  }
-
-  return cnt;
-
-}
-
-void RAColorBasedCoalescing::assignColor(unsigned VirtRegID) {
-
-  // Check for an available register in this class.
-  AllocationOrder Order(VirtRegID, *VRM, RegClassInfo, Matrix);
-
-  std::vector<unsigned> pr;
-  while (unsigned PhysReg = Order.next()) {
-    pr.push_back(PhysReg);
-  }
-
-  std::sort(pr.begin(), pr.end());
-  color[VirtRegID].second = pr[color[VirtRegID].first];
-} 
-
 void RAColorBasedCoalescing::simplify() {
-
-  srand(time(nullptr));
-
-  std::priority_queue<std::pair<unsigned, unsigned>> pq;
-
-  for(unsigned j = 0, r = MRI->getNumVirtRegs(); j != r; ++j) {
-    unsigned reg = TargetRegisterInfo::index2VirtReg(j);
-
-    // if is not a DEBUG register
-    if (MRI->reg_nodbg_empty(reg))
-      continue;
-
-    pq.push(std::pair<unsigned, unsigned>(Degree[reg], reg));
+  // inserting virtual registers in the priority queue sorted by their degree
+  for(std::map<unsigned, std::set<unsigned>> :: iterator i = InterferenceGraph.begin(); i != InterferenceGraph.end(); i++) {
+    unsigned vreg = i->first;
+    ColoringPq.push(std::pair<unsigned, unsigned>(Degree[vreg], vreg));
   }
+}
 
-  while(!pq.empty()) {
+void RAColorBasedCoalescing::biasedSelectExtended() {
+  while(!ColoringPq.empty()) {
+    unsigned vreg = ColoringPq.top().second;
+    ColoringPq.pop();
 
-    unsigned u = pq.top().second;
-    pq.pop();
-    const int maxColor = getNumPhysicalRegs(u);
+    std::vector<int> potentialRegs = getPotentialRegs(vreg);
 
-    unsigned mask = 0;
-    for(auto v: InterferenceGraph[u])
-      if(color[u].first != 30u && color.count(v))
-        // If a neighbor is already colored with valid color c, the c-th bit is set.
-        mask |= (1 << color[v].first);
+    int color = getColor(potentialRegs, vreg);
 
-    /// Counts the amount of non-active bits in a number.
-    int cnt = 0;
-    for(int i = 0; i < maxColor; i++)
-      if(!isSet(mask, i))
-        cnt++;
+    if (color == COLOR_INVALID) {
+      color = getColor(ExtendedColors, vreg);
 
-    // If the number of different colors of the neighbors of u is equal to
-    // zero (there isn't any Physical register available), this virtual register
-    // should be spilled (represented by the color 30).
-    if(cnt == 0) {
-      color[u] = std::make_pair(30u, 0u);
-    } else {
-
-      int k = rand() % cnt;
-
-      /// Assigns the k-th color chosen randomly to the register.
-      for(int i = 0; i < maxColor; i++) {
-        // If the k-th was reached, assign the i-th color to the register. 
-        if(k == 0)
-          color[u] = std::make_pair(i, 0);
-
-        if(!isSet(mask, i))
-          k--;
-      } 
+      if (color == COLOR_INVALID) {
+        color = createNewExtendedColor();
+      }
     }
 
-    assignColor(u);
-
+    ColorsTemp[vreg] = color;
   }
+}
+
+std::vector<int> RAColorBasedCoalescing::getPotentialRegs(unsigned vreg) {
+  std::vector<int> potentialRegs;
+
+  AllocationOrder Order(vreg, *VRM, RegClassInfo, Matrix);
+  while (unsigned physReg = Order.next()) {
+    potentialRegs.push_back(physReg);
+  }
+
+  sort(potentialRegs.begin(), potentialRegs.end());
+  return potentialRegs;
+}
+
+int RAColorBasedCoalescing::getColor(std::vector<int> Colors, unsigned vreg) {
+
+  std::set<int> neighborColors;
+
+  // inserting the color of the neighbors of vreg in a set
+  for(std::set<unsigned> :: iterator j = InterferenceGraph[vreg].begin(); j != InterferenceGraph[vreg].end(); j++) {
+    int colorOfNeighbor = ColorsTemp[*j]; // returns 0 if ColorsTemp[*j] doesn't exist
+
+    if(colorOfNeighbor != 0)
+      neighborColors.insert(colorOfNeighbor);
+  }
+
+  // calculating the number of possible colors to select to vreg
+  unsigned possibilities = Colors.size() - neighborColors.size();
+  if(possibilities == 0)
+    return COLOR_INVALID;
+
+  // assing a random number to k from 0 to (possibilities - 1)
+  unsigned k = rand() % possibilities;
+
+  // selecting the k-th color to vreg
+  for(int color: Colors) {
+    
+    // if color already belongs to a neighbor, we can ignore it
+    if(neighborColors.count(color))
+      continue;
+
+    if(k == 0)
+      return color;
+
+    k--;
+  }
+
+  return COLOR_INVALID;
+}
+
+int RAColorBasedCoalescing::createNewExtendedColor() {
+  int new_color;
+  if (ExtendedColors.empty()) {
+    new_color = -1;
+  } else {
+    new_color = ExtendedColors.back() - 1;
+  }
+
+  ExtendedColors.push_back(new_color);
+
+  return new_color;
+}
+
+bool RAColorBasedCoalescing::isExtendedColor(int color) {
+  return color < 0;
 }
 
 // ===-------------- LLVM --------------===
@@ -497,10 +591,9 @@ bool RAColorBasedCoalescing::runOnMachineFunction(MachineFunction &mf) {
   AA = &getAnalysis<AAResultsWrapperPass>().getAAResults();
 
 
-  //dbgs() << "********** Number of virtual registers: " << MRI->getNumVirtRegs() << "\n\n";
+  // dbgs() << "********** Number of virtual registers: " << MRI->getNumVirtRegs() << "\n\n";
 
-
-  //printVirtualRegisters();
+  // printVirtualRegisters();
 
   algorithm(mf);
 
@@ -510,7 +603,7 @@ bool RAColorBasedCoalescing::runOnMachineFunction(MachineFunction &mf) {
   clearAll();
 
   // Diagnostic output before rewriting
-  //dbgs() << "\nPost alloc VirtRegMap:\n" << *VRM << "\n";
+  // dbgs() << "\nPost alloc VirtRegMap:\n" << *VRM << "\n";
 
   releaseMemory();
   return true;
